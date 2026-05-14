@@ -60,6 +60,7 @@ SEMANTIC_FIELD_ALIASES: dict[str, str] = {
 	"task": "task",
 	"任务": "task",
 	"language": "language",
+	"languages": "language",
 	"lang": "language",
 	"langauge": "language",
 	"语言": "language",
@@ -95,7 +96,7 @@ SEMANTIC_FIELD_ALIASES: dict[str, str] = {
 }
 
 
-LIST_FIELDS = {"constraints", "references"}
+LIST_FIELDS = {"constraints", "references","context"}
 
 SEMANTIC_OUTPUT_FIELDS: tuple[str, ...] = SEMANTIC_EXTRACTION_FIELDS
 SEMANTIC_REQUIRED_FIELDS: tuple[str, ...] = ("task", "language")
