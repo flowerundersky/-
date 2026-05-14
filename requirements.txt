@@ -1,0 +1,12 @@
+accelerate
+gradio
+langchain
+langchain-core
+transformers
+torch
+python-dotenv
+pydantic
+langgraph
+torchvision
+huggingface_hub
+gptqmodel
