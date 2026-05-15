@@ -96,7 +96,7 @@ SEMANTIC_FIELD_ALIASES: dict[str, str] = {
 }
 
 
-LIST_FIELDS = {"constraints", "references","context"}
+LIST_FIELDS = {"constraints", "references"}
 
 SEMANTIC_OUTPUT_FIELDS: tuple[str, ...] = SEMANTIC_EXTRACTION_FIELDS
 SEMANTIC_REQUIRED_FIELDS: tuple[str, ...] = ("task", "language")
@@ -297,8 +297,8 @@ self_check: <true|false>
 
 字段说明：
 - task: 用一句话概括用户要做什么。
-- language: 直接输出最匹配的语言名，不要解释。
-- context: 只放用户明确给出的背景信息。
+- language: 直接输出最匹配的语言名，不要解释，这里的语言指的是代码的编译语言，比如python，C++等，不是自然语言，中文、英文的语言。
+- context: 只放用户明确给出的背景信息,不要生成列表字段。
 - output_mode: 输出最匹配的结果形式，例如 code、markdown 或 patch。
 - style: 输出最匹配的风格，例如 minimal_change、preserve_structure 或 strict_format。
 - constraints: 只放显式约束，不要补充推断。

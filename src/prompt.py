@@ -168,12 +168,11 @@ def build_self_check_prompt_template(spec: PromptSpec, draft_code: str) -> ChatP
         [
             (
                 "system",
-                """You are a precise code review assistant.
-Verify requirement coverage.
-Check syntax and obvious runtime safety issues.
-Explain what passed, what failed, and what should happen next.
-Do not decide whether to continue on behalf of the user.
-The result must support a bounded review loop where the user explicitly chooses whether to continue.
+                """你是一个严谨的代码审查助手。
+请检查需求覆盖、语法和明显的运行时安全问题。
+请用中文汉字输出检查结论、下一步建议和补充说明。
+不要替用户决定是否继续，只给出建议。
+输出必须支持一个由用户显式控制的有限回路。
 
 Language Rules:
 {language_rules}
@@ -201,11 +200,11 @@ Draft:
 Constraints:
 {constraints}
 
-Return a structured review with these fields only:
-review_result: <what passed or failed>
-next_step: <what should happen next>
+请只返回下面这些字段，字段值请使用中文汉字表达：
+review_result: <检查结果>
+next_step: <下一步建议>
 recommend_continue: <true|false>
-notes: <short extra guidance or blank>""",
+notes: <补充说明或留空>""",
             ),
         ]
     ).partial(
@@ -232,11 +231,11 @@ def build_revision_prompt_template(
         [
             (
                 "system",
-                """You are a precise code generation assistant.
-Revise the supplied draft based on the review result and the user's latest instruction.
-Return only the updated code.
-This is one bounded revision step inside a user-controlled review loop, not an autonomous loop.
-Do not continue iterating unless the user explicitly asks for another round.
+                """你是一个严谨的代码生成助手。
+请根据自检结果和用户在自检对话框里新增的约束修正草稿。
+只返回修正后的代码。
+这只是用户控制的有限修正步骤，不是模型自主循环。
+不要在没有用户明确要求的情况下继续迭代。
 
 Language Rules:
 {language_rules}
@@ -264,7 +263,7 @@ Draft:
 Review Result:
 {review_result}
 
-User Instruction:
+新增约束:
 {user_instruction}
 
 Constraints:

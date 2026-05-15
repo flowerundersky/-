@@ -46,10 +46,34 @@ def test_build_self_check_prompt_includes_draft_and_checklist() -> None:
     prompt = build_self_check_prompt_template(spec, "return {'ok': True}").invoke({})
     messages = prompt.to_messages()
 
-    assert "Verify requirement coverage." in messages[0].content
-    assert "Wrap code in a fenced markdown block with the correct language tag." in messages[0].content
+    assert "你是一个严谨的代码审查助手。" in messages[0].content
+    assert "请用中文汉字输出检查结论、下一步建议和补充说明。" in messages[0].content
     assert "return {'ok': True}" in messages[1].content
-    assert "Keep the response minimal." in messages[1].content
+    assert "请只返回下面这些字段，字段值请使用中文汉字表达：" in messages[1].content
+
+
+def test_build_revision_prompt_mentions_new_constraints() -> None:
+    from src.prompt import build_revision_prompt_template
+
+    spec = PromptSpec(
+        task="Add a health check endpoint.",
+        language="Python",
+        context="Use FastAPI.",
+        output_mode="code",
+        style="minimal_change",
+        constraints=("Keep the response minimal.",),
+    )
+    prompt = build_revision_prompt_template(
+        spec,
+        "return {'ok': True}",
+        review_result="需要补充参数校验",
+        user_instruction="新增约束：保留原有路由结构",
+    ).invoke({})
+    messages = prompt.to_messages()
+
+    assert "请根据自检结果和用户在自检对话框里新增的约束修正草稿。" in messages[0].content
+    assert "新增约束:" in messages[1].content
+    assert "保留原有路由结构" in messages[1].content
 
 
 def test_build_language_rules_uses_fallback_rules_for_unknown_language() -> None:

@@ -33,7 +33,7 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             "# Qwen Code Generation\n"
             "直接用自然语言描述任务、目标语言、输出形式、风格和是否自检。\n"
-            "系统会自动抽取字段；自检模式会进入显式 review 状态机，等待你决定是否继续。"
+            "系统会自动抽取字段；自检模式会进入显式 review 状态机，等待你补充新的约束并决定是否继续。"
         )
         chatbot = gr.Chatbot(label="对话", height=420)
         prompt_box = gr.Textbox(
@@ -43,7 +43,7 @@ def build_ui() -> gr.Blocks:
         )
         self_check_box = gr.Checkbox(label="启用自检", value=False)
         revision_box = gr.Textbox(
-            label="继续修正说明（可选）",
+            label="自检新增约束（可选）",
             lines=2,
             placeholder="例如：请优先修复字段抽取的歧义，保留当前结构",
         )

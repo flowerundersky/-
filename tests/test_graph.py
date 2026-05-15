@@ -70,7 +70,7 @@ def test_run_graph_self_check_uses_review_prompt() -> None:
 
     assert result == "generated text"
     prompt_text = backend.prompts[0].to_string()
-    assert "You are a precise code review assistant." in prompt_text
+    assert "你是一个严谨的代码审查助手。" in prompt_text
     assert "return {'ok': True}" in prompt_text
 
 
