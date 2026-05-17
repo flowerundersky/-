@@ -31,6 +31,8 @@ class GraphRequest:
     references: Sequence[str] = field(default_factory=tuple)
     draft_code: str | None = None
     self_check: bool = False
+    review_result: str = ""
+    user_instruction: str = ""
     generation_params: Mapping[str, Any] | None = None
 
 
@@ -66,9 +68,15 @@ class GraphState(TypedDict, total=False):
     references: tuple[str, ...]
     draft_code: str | None
     self_check: bool
+    review_result: str
+    user_instruction: str
     generation_params: Mapping[str, Any] | None
+    phase: str
+    round_index: int
+    max_rounds: int
     prompt: Any
     result: str
+    review: ReviewOutcome
     output: str
 
 
@@ -80,6 +88,7 @@ def build_graph(backend: ModelBackend | None = None):
     workflow = StateGraph(GraphState)
     workflow.add_node("build_prompt", _build_prompt_node)
     workflow.add_node("generate", _make_generate_node(active_backend))
+    workflow.add_node("process", _process_generation_node)
     workflow.add_node("finalize", _finalize_node)
     workflow.add_conditional_edges(
         START,
@@ -90,7 +99,15 @@ def build_graph(backend: ModelBackend | None = None):
         },
     )
     workflow.add_edge("build_prompt", "generate")
-    workflow.add_edge("generate", "finalize")
+    workflow.add_edge("generate", "process")
+    workflow.add_conditional_edges(
+        "process",
+        _route_after_process,
+        {
+            "build_prompt": "build_prompt",
+            "finalize": "finalize",
+        },
+    )
     workflow.add_edge("finalize", END)
     return workflow.compile()
 
@@ -106,10 +123,47 @@ def run_graph(
     references: Sequence[str] = (),
     draft_code: str | None = None,
     self_check: bool = False,
+    review_result: str = "",
+    user_instruction: str = "",
     backend: ModelBackend | None = None,
     generation_params: Mapping[str, Any] | None = None,
 ) -> str:
     """Run the LangGraph workflow and return the generated output."""
+
+    return run_graph_with_state(
+        task,
+        language,
+        context,
+        output_mode=output_mode,
+        style=style,
+        constraints=constraints,
+        references=references,
+        draft_code=draft_code,
+        self_check=self_check,
+        review_result=review_result,
+        user_instruction=user_instruction,
+        backend=backend,
+        generation_params=generation_params,
+    )["output"]
+
+
+def run_graph_with_state(
+    task: str,
+    language: str,
+    context: str = "",
+    *,
+    output_mode: OutputMode = "code",
+    style: StyleMode = "minimal_change",
+    constraints: Sequence[str] = (),
+    references: Sequence[str] = (),
+    draft_code: str | None = None,
+    self_check: bool = False,
+    review_result: str = "",
+    user_instruction: str = "",
+    backend: ModelBackend | None = None,
+    generation_params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the workflow and return the final graph state."""
 
     request = GraphRequest(
         task=task,
@@ -121,11 +175,12 @@ def run_graph(
         references=references,
         draft_code=draft_code,
         self_check=self_check,
+        review_result=review_result,
+        user_instruction=user_instruction,
         generation_params=generation_params,
     )
 
-    result = build_graph(backend).invoke(_request_to_state(request))
-    return result["output"]
+    return build_graph(backend).invoke(_request_to_state(request))
 
 
 def start_self_check_session(
@@ -137,12 +192,27 @@ def start_self_check_session(
     if not request.self_check:
         raise ValueError("self_check must be enabled to start a self-check session")
 
-    active_backend = backend or create_backend().load()
-    draft_code = request.draft_code or _generate_code(_without_self_check(request), active_backend)
-    review = _run_review_step(request, draft_code, active_backend)
+    state = run_graph_with_state(
+        request.task,
+        request.language,
+        request.context,
+        output_mode=request.output_mode,
+        style=request.style,
+        constraints=request.constraints,
+        references=request.references,
+        draft_code=request.draft_code,
+        self_check=True,
+        review_result=request.review_result,
+        user_instruction=request.user_instruction,
+        backend=backend,
+        generation_params=request.generation_params,
+    )
+    review = state.get("review")
+    if not isinstance(review, ReviewOutcome):
+        raise ValueError("self-check session did not produce a review outcome")
     return SelfCheckSession(
         request=request,
-        draft_code=draft_code,
+        draft_code=str(state.get("draft_code", "")),
         review=review,
     )
 
@@ -157,18 +227,27 @@ def continue_self_check_session(
     if session.round_index >= session.max_rounds:
         return session
 
-    active_backend = backend or create_backend().load()
-    revised_code = _generate_revision(
-        session.request,
-        session.draft_code,
-        session.review,
-        active_backend,
+    state = run_graph_with_state(
+        session.request.task,
+        session.request.language,
+        session.request.context,
+        output_mode=session.request.output_mode,
+        style=session.request.style,
+        constraints=session.request.constraints,
+        references=session.request.references,
+        draft_code=session.draft_code,
+        self_check=True,
+        review_result=session.review.review_result,
         user_instruction=user_instruction,
+        backend=backend,
+        generation_params=session.request.generation_params,
     )
-    review = _run_review_step(session.request, revised_code, active_backend)
+    review = state.get("review")
+    if not isinstance(review, ReviewOutcome):
+        raise ValueError("self-check session did not produce a review outcome")
     return SelfCheckSession(
         request=session.request,
-        draft_code=revised_code,
+        draft_code=str(state.get("draft_code", "")),
         review=review,
         round_index=session.round_index + 1,
         max_rounds=session.max_rounds,
@@ -196,6 +275,7 @@ def format_review_message(session: SelfCheckSession) -> str:
 
 
 def _request_to_state(request: GraphRequest) -> GraphState:
+    phase = "revision" if request.self_check and request.draft_code and request.review_result.strip() else "generate"
     return GraphState(
         task=request.task,
         language=request.language,
@@ -206,7 +286,10 @@ def _request_to_state(request: GraphRequest) -> GraphState:
         references=tuple(request.references),
         draft_code=request.draft_code,
         self_check=request.self_check,
+        review_result=request.review_result,
+        user_instruction=request.user_instruction,
         generation_params=request.generation_params,
+        phase=phase,
     )
 
 
@@ -216,11 +299,28 @@ def _route_prompt(state: GraphState) -> str:
 
 def _build_prompt_node(state: GraphState) -> dict[str, Any]:
     spec = _state_to_prompt_spec(state)
+    phase = state.get("phase", "code")
 
-    if state.get("self_check"):
+    if phase == "revision":
         draft_code = state.get("draft_code")
         if not draft_code:
-            raise ValueError("draft_code is required when self_check is enabled")
+            raise ValueError("draft_code is required when revision phase is enabled")
+        review_result = state.get("review_result", "")
+        if not str(review_result).strip():
+            raise ValueError("review_result is required when revision phase is enabled")
+
+        prompt = build_revision_prompt_template(
+            spec,
+            draft_code,
+            review_result=str(review_result),
+            user_instruction=state.get("user_instruction", ""),
+        ).invoke({})
+        return {"prompt": prompt}
+
+    if phase == "review":
+        draft_code = state.get("draft_code")
+        if not draft_code:
+            raise ValueError("draft_code is required when review phase is enabled")
 
         prompt = build_self_check_prompt_template(spec, draft_code).invoke({})
         return {"prompt": prompt}
@@ -237,8 +337,50 @@ def _make_generate_node(backend: ModelBackend):
     return _generate
 
 
+def _process_generation_node(state: GraphState) -> dict[str, Any]:
+    phase = state.get("phase", "code")
+    result = (state.get("result") or "").strip()
+
+    if phase in {"generate", "revision"} and state.get("self_check"):
+        return {
+            "draft_code": result,
+            "phase": "review",
+        }
+
+    if phase in {"generate", "revision"}:
+        return {
+            "output": result,
+            "phase": "done",
+        }
+
+    if phase == "review":
+        review = _parse_review_outcome(result)
+        return {
+            "review": review,
+            "review_result": review.review_result,
+            "output": _format_self_check_output(
+                draft_code=state.get("draft_code", ""),
+                review=review,
+            ),
+            "phase": "done",
+        }
+
+    return {
+        "output": result,
+        "phase": "done",
+    }
+
+
+def _route_after_process(state: GraphState) -> str:
+    phase = state.get("phase", "done")
+    return "build_prompt" if phase == "review" else "finalize"
+
+
 def _finalize_node(state: GraphState) -> dict[str, Any]:
-    return {"output": state["result"].strip()}
+    output = state.get("output")
+    if output:
+        return {"output": str(output).strip()}
+    return {"output": state.get("result", "").strip()}
 
 
 def _state_to_prompt_spec(state: GraphState) -> PromptSpec:
@@ -264,6 +406,7 @@ def _without_self_check(request: GraphRequest) -> GraphRequest:
         references=request.references,
         draft_code=request.draft_code,
         self_check=False,
+        user_instruction=request.user_instruction,
         generation_params=request.generation_params,
     )
 
@@ -342,6 +485,28 @@ def _render_review_for_revision(review: ReviewOutcome) -> str:
     if review.notes.strip():
         lines.append(f"notes: {review.notes.strip()}")
     return "\n".join(lines)
+
+
+def _format_self_check_output(
+    *,
+    draft_code: str,
+    review: ReviewOutcome,
+) -> str:
+    recommendation = "建议继续" if review.recommend_continue else "可以结束"
+    sections = [
+        "自检结果:",
+        review.review_result.strip() or "无",
+        "",
+        "下一步建议:",
+        review.next_step.strip() or "无",
+        "",
+        "是否建议继续:",
+        recommendation,
+    ]
+    if review.notes.strip():
+        sections.extend(["", "补充说明:", review.notes.strip()])
+    sections.extend(["", "当前草稿:", draft_code.strip() or "无"])
+    return "\n".join(sections)
 
 
 def _split_first_colon(line: str) -> tuple[str, str]:

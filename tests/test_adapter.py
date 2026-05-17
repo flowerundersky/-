@@ -1,7 +1,5 @@
 """Tests for the parser-to-graph request adapter."""
 
-from pydantic import ValidationError
-
 from src.adapter import GraphRequestPayload, build_graph_request
 
 
@@ -31,19 +29,17 @@ def test_build_graph_request_normalizes_structured_payload() -> None:
     assert request.draft_code is None
 
 
-def test_build_graph_request_requires_draft_code_for_self_check() -> None:
+def test_build_graph_request_allows_self_check_without_draft_code() -> None:
     payload = {
         "task": "Review this code.",
         "language": "Python",
         "self_check": True,
     }
 
-    try:
-        build_graph_request(payload)
-    except ValidationError as exc:
-        assert "draft_code is required when self_check is enabled" in str(exc)
-    else:
-        raise AssertionError("ValidationError was not raised")
+    request = build_graph_request(payload)
+
+    assert request.self_check is True
+    assert request.draft_code is None
 
 
 def test_graph_request_payload_can_be_converted_directly() -> None:

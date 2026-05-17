@@ -12,12 +12,8 @@ import gradio as gr
 from .adapter import build_graph_request
 from .graph import (
     GraphRequest,
-    ReviewOutcome,
-    SelfCheckSession,
-    continue_self_check_session,
-    format_review_message,
     run_graph,
-    start_self_check_session,
+    run_graph_with_state,
 )
 from .model import QwenHFBackend, create_backend
 from .parser import SMALL_SEMANTIC_LLM_MODEL_PATH, build_structured_fields_with_trace
@@ -33,7 +29,7 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             "# Qwen Code Generation\n"
             "直接用自然语言描述任务、目标语言、输出形式、风格和是否自检。\n"
-            "系统会自动抽取字段；自检模式会进入显式 review 状态机，等待你补充新的约束并决定是否继续。"
+            "系统会自动抽取字段；自检模式会在图工作流内部完成 draft、review 和 revision 的循环，并输出最终自检摘要。"
         )
         chatbot = gr.Chatbot(label="对话", height=420)
         prompt_box = gr.Textbox(
@@ -43,9 +39,9 @@ def build_ui() -> gr.Blocks:
         )
         self_check_box = gr.Checkbox(label="启用自检", value=False)
         revision_box = gr.Textbox(
-            label="自检新增约束（可选）",
+            label="自检说明",
             lines=2,
-            placeholder="例如：请优先修复字段抽取的歧义，保留当前结构",
+            placeholder="图内自检已自动完成，这里仅保留为兼容界面。",
         )
         with gr.Row():
             preview_button = gr.Button("预览解析", variant="secondary")
@@ -238,9 +234,23 @@ def _handle_run(
 
     try:
         if request.self_check:
-            session = start_self_check_session(request, backend=_get_generation_backend())
-            output = _decorate_review_message(format_review_message(session), session)
-            updated_workflow_state = _serialize_session(session, source_message=message)
+            graph_state = run_graph_with_state(
+                request.task,
+                request.language,
+                request.context,
+                output_mode=request.output_mode,
+                style=request.style,
+                constraints=request.constraints,
+                references=request.references,
+                draft_code=request.draft_code,
+                self_check=request.self_check,
+                review_result="",
+                user_instruction="",
+                generation_params=request.generation_params,
+                backend=_get_generation_backend(),
+            )
+            output = str(graph_state.get("output", ""))
+            updated_workflow_state = _serialize_graph_state(graph_state, request, message)
         else:
             output = run_graph(
                 request.task,
@@ -251,7 +261,7 @@ def _handle_run(
                 constraints=request.constraints,
                 references=request.references,
                 draft_code=request.draft_code,
-                self_check=False,
+                self_check=request.self_check,
                 generation_params=request.generation_params,
                 backend=_get_generation_backend(),
             )
@@ -289,9 +299,11 @@ def _handle_continue(
     str,
     str,
 ]:
-    session = _deserialize_session(workflow_state)
-    if session is None or not session.request.self_check:
-        output = "当前没有可继续的自检会话。"
+    request_data = workflow_state.get("request") or {}
+    draft_code = str(workflow_state.get("draft_code", "")).strip()
+    review_result = str(workflow_state.get("review_result", "")).strip()
+    if not request_data or not draft_code or not review_result:
+        output = "当前没有可继续修订的自检结果，请先点击‘开始执行’。"
         updated_history = _append_chat(history, "继续修正", output)
         return (
             updated_history,
@@ -306,16 +318,37 @@ def _handle_continue(
         )
 
     try:
-        updated_session = continue_self_check_session(
-            session,
+        request = GraphRequest(
+            task=str(request_data.get("task", "")),
+            language=str(request_data.get("language", "")),
+            context=str(request_data.get("context", "")),
+            output_mode=request_data.get("output_mode", "code"),
+            style=request_data.get("style", "minimal_change"),
+            constraints=tuple(request_data.get("constraints", ())),
+            references=tuple(request_data.get("references", ())),
+            draft_code=draft_code,
+            self_check=True,
+            review_result=review_result,
+            user_instruction=revision_note.strip(),
+            generation_params=request_data.get("generation_params"),
+        )
+        graph_state = run_graph_with_state(
+            request.task,
+            request.language,
+            request.context,
+            output_mode=request.output_mode,
+            style=request.style,
+            constraints=request.constraints,
+            references=request.references,
+            draft_code=request.draft_code,
+            self_check=True,
+            review_result=request.review_result,
+            user_instruction=request.user_instruction,
+            generation_params=request.generation_params,
             backend=_get_generation_backend(),
-            user_instruction=revision_note,
         )
-        output = _decorate_review_message(format_review_message(updated_session), updated_session)
-        updated_workflow_state = _serialize_session(
-            updated_session,
-            source_message=workflow_state.get("source_message", ""),
-        )
+        output = str(graph_state.get("output", ""))
+        updated_workflow_state = _serialize_graph_state(graph_state, request, workflow_state.get("source_message", ""))
     except Exception as exc:  # noqa: BLE001
         output = f"继续修正失败：{exc}"
         updated_workflow_state = workflow_state
@@ -323,13 +356,13 @@ def _handle_continue(
     updated_history = _append_chat(history, "继续修正", output)
     return (
         updated_history,
-        _format_semantic_raw_output(""),
+        output,
         {},
-        _request_preview(session.request),
+        {},
         output,
         updated_history,
-        updated_workflow_state,
-        str(workflow_state.get("source_message", "")),
+        {},
+        "",
         "",
     )
 
@@ -348,37 +381,18 @@ def _handle_stop(
     str,
     str,
 ]:
-    session = _deserialize_session(workflow_state)
-    if session is None:
-        output = "当前没有需要结束的自检会话。"
-        updated_history = _append_chat(history, "结束自检", output)
-        return (
-            updated_history,
-            output,
-            {},
-            {},
-            output,
-            updated_history,
-            {},
-            "",
-            "",
-        )
-
-    output = (
-        "已结束自检会话。\n\n"
-        f"当前草稿：\n{session.draft_code.strip() or '无'}\n\n"
-        f"最近一次检查结果：\n{session.review.review_result.strip() or '无'}"
-    )
+    _ = workflow_state
+    output = "自检已内置到图工作流中，当前没有可单独结束的外部会话。"
     updated_history = _append_chat(history, "结束自检", output)
     return (
         updated_history,
-        _format_semantic_raw_output(""),
+        output,
         {},
-        _request_preview(session.request),
+        {},
         output,
         updated_history,
         {},
-        str(workflow_state.get("source_message", "")),
+        "",
         "",
     )
 
@@ -475,17 +489,6 @@ def _format_semantic_raw_output(raw_output: str) -> str:
     return text
 
 
-def _decorate_review_message(message: str, session: SelfCheckSession) -> str:
-    recommendation = "建议继续" if session.review.recommend_continue else "可以结束"
-    max_rounds = f"{session.round_index + 1}/{session.max_rounds}"
-    return (
-        f"{message}\n\n"
-        f"当前轮次：{max_rounds}\n"
-        "你可以点击“继续修正”进入下一轮，或者点击“结束自检”结束当前会话。\n"
-        f"模型建议：{recommendation}"
-    )
-
-
 def _request_preview(request: GraphRequest) -> dict[str, Any]:
     return {
         "task": request.task,
@@ -497,66 +500,35 @@ def _request_preview(request: GraphRequest) -> dict[str, Any]:
         "references": list(request.references),
         "draft_code": request.draft_code,
         "self_check": request.self_check,
+        "review_result": request.review_result,
+        "user_instruction": request.user_instruction,
         "generation_params": request.generation_params,
     }
 
 
-def _serialize_session(session: SelfCheckSession, source_message: str = "") -> dict[str, Any]:
+def _serialize_graph_state(graph_state: dict[str, Any], request: GraphRequest, source_message: str = "") -> dict[str, Any]:
+    review = graph_state.get("review")
+    serialized_review: dict[str, Any] = {}
+    if review is not None:
+        serialized_review = {
+            "review_result": getattr(review, "review_result", ""),
+            "next_step": getattr(review, "next_step", ""),
+            "recommend_continue": bool(getattr(review, "recommend_continue", False)),
+            "notes": getattr(review, "notes", ""),
+            "raw_output": getattr(review, "raw_output", ""),
+        }
+
     return {
-        "kind": "self_check_session",
+        "kind": "graph_state",
         "source_message": source_message,
-        "request": _request_preview(session.request),
-        "draft_code": session.draft_code,
-        "review": {
-            "review_result": session.review.review_result,
-            "next_step": session.review.next_step,
-            "recommend_continue": session.review.recommend_continue,
-            "notes": session.review.notes,
-            "raw_output": session.review.raw_output,
-        },
-        "round_index": session.round_index,
-        "max_rounds": session.max_rounds,
+        "request": _request_preview(request),
+        "draft_code": str(graph_state.get("draft_code", "")),
+        "review_result": str(graph_state.get("review_result", serialized_review.get("review_result", ""))),
+        "review": serialized_review,
+        "round_index": int(graph_state.get("round_index", 0)),
+        "max_rounds": int(graph_state.get("max_rounds", 2)),
+        "output": str(graph_state.get("output", "")),
     }
-
-
-def _deserialize_session(data: dict[str, Any]) -> SelfCheckSession | None:
-    if not data or data.get("kind") != "self_check_session":
-        return None
-
-    request_data = data.get("request") or {}
-    review_data = data.get("review") or {}
-    request = GraphRequest(
-        task=request_data.get("task", ""),
-        language=request_data.get("language", ""),
-        context=request_data.get("context", ""),
-        output_mode=request_data.get("output_mode", "code"),
-        style=request_data.get("style", "minimal_change"),
-        constraints=tuple(request_data.get("constraints", ())),
-        references=tuple(request_data.get("references", ())),
-        draft_code=request_data.get("draft_code"),
-        self_check=bool(request_data.get("self_check", False)),
-        generation_params=request_data.get("generation_params"),
-    )
-    review = {
-        "review_result": review_data.get("review_result", ""),
-        "next_step": review_data.get("next_step", ""),
-        "recommend_continue": bool(review_data.get("recommend_continue", False)),
-        "notes": review_data.get("notes", ""),
-        "raw_output": review_data.get("raw_output", ""),
-    }
-    return SelfCheckSession(
-        request=request,
-        draft_code=data.get("draft_code", ""),
-        review=ReviewOutcome(
-            review_result=review["review_result"],
-            next_step=review["next_step"],
-            recommend_continue=review["recommend_continue"],
-            notes=review["notes"],
-            raw_output=review["raw_output"],
-        ),
-        round_index=int(data.get("round_index", 0)),
-        max_rounds=int(data.get("max_rounds", 2)),
-    )
 
 
 @lru_cache(maxsize=1)

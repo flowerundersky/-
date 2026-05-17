@@ -190,8 +190,6 @@ class ParsedRequestPayload(BaseModel):
 
 	@model_validator(mode="after")
 	def _validate_self_check(self) -> "ParsedRequestPayload":
-		if self.self_check and not self.draft_code:
-			raise ValueError("draft_code is required when self_check is enabled")
 		return self
 
 

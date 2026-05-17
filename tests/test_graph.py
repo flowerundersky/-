@@ -57,21 +57,29 @@ def test_run_graph_builds_prompt_and_calls_backend() -> None:
     assert "src/app.py" in prompt_text
 
 
-def test_run_graph_self_check_uses_review_prompt() -> None:
-    backend = DummyBackend()
+def test_run_graph_self_check_runs_one_round_and_reviews() -> None:
+    backend = SequenceBackend(
+        [
+            "draft code",
+            "Review Result: needs cleanup\nnext_step: fix naming\nrecommend_continue: true\nnotes: keep going",
+        ]
+    )
 
     result = run_graph(
         task="Review this adapter.",
         language="Python",
         self_check=True,
-        draft_code="return {'ok': True}",
         backend=backend,
     )
 
-    assert result == "generated text"
-    prompt_text = backend.prompts[0].to_string()
-    assert "你是一个严谨的代码审查助手。" in prompt_text
-    assert "return {'ok': True}" in prompt_text
+    assert "自检结果:" in result
+    assert "needs cleanup" in result
+    assert "当前草稿:" in result
+    assert "draft code" in result
+
+    assert len(backend.prompts) == 2
+    assert "You are a precise code generation assistant." in backend.prompts[0].to_string()
+    assert "你是一个严谨的代码审查助手。" in backend.prompts[1].to_string()
 
 
 def test_build_graph_returns_compiled_workflow() -> None:
@@ -84,9 +92,9 @@ def test_self_check_session_advances_only_on_explicit_continue() -> None:
     backend = SequenceBackend(
         [
             "draft code",
-            "review_result: needs cleanup\nnext_step: fix naming\nrecommend_continue: true\nnotes: keep going",
+            "Review Result: needs cleanup\nnext_step: fix naming\nrecommend_continue: true\nnotes: keep going",
             "revised code",
-            "review_result: looks good\nnext_step: stop\nrecommend_continue: false\nnotes: done",
+            "Review Result: looks good\nnext_step: stop\nrecommend_continue: false\nnotes: done",
         ]
     )
     request = GraphRequest(
@@ -107,3 +115,33 @@ def test_self_check_session_advances_only_on_explicit_continue() -> None:
     assert next_session.draft_code == "revised code"
     assert next_session.review.review_result == "looks good"
     assert next_session.review.recommend_continue is False
+
+    prompt_text = backend.prompts[2].to_string()
+    assert "Review Result:" in prompt_text
+    assert "needs cleanup" in prompt_text
+    assert "请保留结构" not in prompt_text
+
+
+def test_continue_self_check_session_passes_revision_note() -> None:
+    backend = SequenceBackend(
+        [
+            "draft code",
+            "Review Result: needs cleanup\nnext_step: fix naming\nrecommend_continue: true\nnotes: keep going",
+            "revised code",
+            "Review Result: looks good\nnext_step: stop\nrecommend_continue: false\nnotes: done",
+        ]
+    )
+    request = GraphRequest(
+        task="Review this adapter.",
+        language="Python",
+        self_check=True,
+    )
+
+    session = start_self_check_session(request, backend=backend)
+    next_session = continue_self_check_session(session, backend=backend, user_instruction="Please keep the public API unchanged.")
+
+    assert next_session.draft_code == "revised code"
+    prompt_text = backend.prompts[2].to_string()
+    assert "Review Result:" in prompt_text
+    assert "needs cleanup" in prompt_text
+    assert "Please keep the public API unchanged." in prompt_text
