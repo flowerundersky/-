@@ -27,10 +27,7 @@ func main() {
 		bridgeScript = filepath.Join(workDir, "python_bridge.py")
 	}
 
-	pythonBinary := os.Getenv("PYTHON_BIN")
-	if pythonBinary == "" {
-		pythonBinary = "python3"
-	}
+	pythonBinary := resolvePythonBinary(workDir)
 
 	requestTimeout := 5 * time.Minute
 	if rawTimeout := os.Getenv("REQUEST_TIMEOUT_SECONDS"); rawTimeout != "" {
@@ -83,4 +80,17 @@ func addrFromEnv() string {
 		return addr
 	}
 	return ":8088"
+}
+
+func resolvePythonBinary(workDir string) string {
+	if pythonBinary := os.Getenv("PYTHON_BIN"); pythonBinary != "" {
+		return pythonBinary
+	}
+
+	venvPython := filepath.Clean(filepath.Join(workDir, "..", ".venv", "bin", "python"))
+	if info, err := os.Stat(venvPython); err == nil && !info.IsDir() {
+		return venvPython
+	}
+
+	return "python3"
 }

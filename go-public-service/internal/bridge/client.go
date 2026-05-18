@@ -22,8 +22,10 @@ type Client struct {
 }
 
 type Request struct {
-	Message   string `json:"message"`
-	SelfCheck bool   `json:"self_check"`
+	Message      string                 `json:"message,omitempty"`
+	SelfCheck    bool                   `json:"self_check,omitempty"`
+	RevisionNote string                 `json:"revision_note,omitempty"`
+	WorkflowState map[string]any        `json:"workflow_state,omitempty"`
 }
 
 type Response struct {
@@ -54,18 +56,24 @@ func (c *Client) Generate(ctx context.Context, request Request) (Response, error
 	return c.invoke(ctx, "generate", request)
 }
 
+func (c *Client) Continue(ctx context.Context, request Request) (Response, error) {
+	return c.invoke(ctx, "continue", request)
+}
+
 func (c *Client) invoke(ctx context.Context, mode string, request Request) (Response, error) {
 	if c == nil {
 		return Response{}, fmt.Errorf("bridge client is nil")
 	}
-	if request.Message == "" {
+	if mode != "continue" && request.Message == "" {
 		return Response{}, fmt.Errorf("message cannot be empty")
 	}
 
 	payload := map[string]any{
-		"mode":       mode,
-		"message":    request.Message,
-		"self_check": request.SelfCheck,
+		"mode":          mode,
+		"message":       request.Message,
+		"self_check":    request.SelfCheck,
+		"revision_note": request.RevisionNote,
+		"workflow_state": request.WorkflowState,
 	}
 	input, err := json.Marshal(payload)
 	if err != nil {

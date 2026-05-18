@@ -27,8 +27,10 @@ type Server struct {
 }
 
 type requestPayload struct {
-	Message   string `json:"message"`
-	SelfCheck bool   `json:"self_check"`
+	Message       string         `json:"message,omitempty"`
+	SelfCheck     bool           `json:"self_check,omitempty"`
+	RevisionNote  string         `json:"revision_note,omitempty"`
+	WorkflowState map[string]any `json:"workflow_state,omitempty"`
 }
 
 type responseEnvelope struct {
@@ -61,11 +63,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", s.handleHealth)
-	s.mux.HandleFunc("GET /readyz", s.handleReady)
-	s.mux.HandleFunc("POST /v1/preview", s.handlePreview)
-	s.mux.HandleFunc("POST /v1/generate", s.handleGenerate)
-	s.mux.HandleFunc("POST /v1/echo", s.handleEcho)
+	s.mux.HandleFunc("/healthz", s.handleHealth)
+	s.mux.HandleFunc("/readyz", s.handleReady)
+	s.mux.HandleFunc("/v1/preview", s.handlePreview)
+	s.mux.HandleFunc("/v1/generate", s.handleGenerate)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -90,15 +91,19 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	s.handleMode(w, r, "preview")
 }
 
 func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	s.handleMode(w, r, "generate")
-}
-
-func (s *Server) handleEcho(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "gateway is alive"})
 }
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request, mode string) {
@@ -120,18 +125,56 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request, mode string)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	ctx := r.Context()
+	if strings.TrimSpace(payload.RevisionNote) != "" || len(payload.WorkflowState) > 0 {
+		if strings.TrimSpace(payload.RevisionNote) == "" {
+			writeError(w, http.StatusBadRequest, "revision_note cannot be empty")
+			return
+		}
+		if len(payload.WorkflowState) == 0 {
+			writeError(w, http.StatusBadRequest, "workflow_state cannot be empty")
+			return
+		}
+
+		result, err := s.bridge.Continue(ctx, bridge.Request{
+			RevisionNote:  payload.RevisionNote,
+			WorkflowState: payload.WorkflowState,
+		})
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = http.StatusGatewayTimeout
+			}
+			writeJSON(w, status, responseEnvelope{
+				OK:      false,
+				Mode:    "continue",
+				Error:   err.Error(),
+				Service: "go-public-gateway",
+				Time:    time.Now().Format(time.RFC3339Nano),
+				Meta: map[string]any{
+					"elapsed_ms": time.Since(start).Milliseconds(),
+				},
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, responseEnvelope{
+			OK:      true,
+			Mode:    mode,
+			Elapsed: time.Since(start).String(),
+			Result:  result,
+			Service: "go-public-gateway",
+			Time:    time.Now().Format(time.RFC3339Nano),
+		})
+		return
+	}
+
 	if strings.TrimSpace(payload.Message) == "" {
 		writeError(w, http.StatusBadRequest, "message cannot be empty")
 		return
 	}
 
-	ctx := r.Context()
-	var result bridge.Response
-	if mode == "preview" {
-		result, err = s.bridge.Preview(ctx, bridge.Request{Message: payload.Message, SelfCheck: payload.SelfCheck})
-	} else {
-		result, err = s.bridge.Generate(ctx, bridge.Request{Message: payload.Message, SelfCheck: payload.SelfCheck})
-	}
+	result, err := s.bridge.Generate(ctx, bridge.Request{Message: payload.Message, SelfCheck: payload.SelfCheck})
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -139,7 +182,7 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request, mode string)
 		}
 		writeJSON(w, status, responseEnvelope{
 			OK:      false,
-			Mode:    mode,
+			Mode:    "generate",
 			Error:   err.Error(),
 			Service: "go-public-gateway",
 			Time:    time.Now().Format(time.RFC3339Nano),
