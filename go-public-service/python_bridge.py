@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 from contextlib import redirect_stdout
-
+from src.graph import GraphRequest,run_graph_with_state
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -135,7 +135,7 @@ def _run_continue(workflow_state: dict[str, object], revision_note: str) -> dict
 	if not isinstance(request_data, dict):
 		raise ValueError("workflow_state request must be a mapping")
 
-	from src.graph import GraphRequest
+
 
 	request = GraphRequest(
 		task=str(request_data.get("task", "")),

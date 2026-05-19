@@ -482,6 +482,8 @@ def _unwrap_result(response: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+
+##处理返回结果的格式化和对话状态管理
 def _format_parsed_response(parsed: dict[str, Any]) -> str:
     return "已解析字段：\n" + _format_field_block(parsed)
 
