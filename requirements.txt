@@ -10,3 +10,4 @@ langgraph
 torchvision
 huggingface_hub
 gptqmodel
+pytest
